@@ -112,7 +112,12 @@ class _LikeButtonState extends State<LikeButton> {
             item == requestItem &&
             (failed || generation != _requestGeneration)) {
           // Returning to an item may have read it before this write committed.
-          await _fetchLikedStatus();
+          try {
+            await _fetchLikedStatus();
+          } catch (_) {
+            // Keep the write failure actionable if its recovery read also fails.
+            if (!failed) rethrow;
+          }
         }
       }
     }

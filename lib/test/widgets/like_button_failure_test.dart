@@ -15,43 +15,53 @@ void main() {
   // The track is gone from its library, or the item has no liked state (such
   // as an independent file). Either failure reaches the global handler, which
   // shows its localized message.
-  for (final kind in [
-    RequestErrorKind.notFound,
-    RequestErrorKind.invalidInput,
+  for (final (kind, recoveryFails) in [
+    (RequestErrorKind.notFound, false),
+    (RequestErrorKind.invalidInput, false),
+    (RequestErrorKind.invalidInput, true),
   ]) {
-    testWidgets('a like refused as $kind is left to the global handler', (
-      tester,
-    ) async {
-      final failure = RequestFailure('SetLikedRequest', kind, 'refused');
-      await tester.pumpWidget(
-        ChangeNotifierProvider<LibraryOpenStateProvider>(
-          create: (_) => _LibraryOpenStateProvider(),
-          child: FluentApp(
-            home: LikeButton(
-              item: const PlayingItem.libraryItem(
-                libraryId: 'library-uuid',
-                fileUuid: 'file-uuid',
+    testWidgets(
+      'a like refused as $kind reaches the global handler with recovery failure=$recoveryFails',
+      (tester) async {
+        final failure = RequestFailure('SetLikedRequest', kind, 'refused');
+        var reads = 0;
+        await tester.pumpWidget(
+          ChangeNotifierProvider<LibraryOpenStateProvider>(
+            create: (_) => _LibraryOpenStateProvider(),
+            child: FluentApp(
+              home: LikeButton(
+                item: const PlayingItem.libraryItem(
+                  libraryId: 'library-uuid',
+                  fileUuid: 'file-uuid',
+                ),
+                fetchLikedStatus: (_) async {
+                  if (++reads > 1 && recoveryFails) {
+                    throw StateError('recovery read failed');
+                  }
+                  return true;
+                },
+                setLikedStatus: (_, _) async => throw failure,
               ),
-              fetchLikedStatus: (_) async => true,
-              setLikedStatus: (_, _) async => throw failure,
             ),
           ),
-        ),
-      );
+        );
 
-      await tester.pumpAndSettle();
-
-      // The button starts the request without awaiting it, so a failure it
-      // does not catch is an uncaught error of the zone that tapped it. In the
-      // app that is the root zone, whose handler shows the failure.
-      final escaped = <Object>[];
-      await runZonedGuarded(() async {
-        await tester.tap(find.byIcon(Symbols.favorite));
         await tester.pumpAndSettle();
-      }, (error, _) => escaped.add(error));
-      expect(escaped, [same(failure)]);
-      expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
-    });
+
+        // The button starts the request without awaiting it, so a failure it
+        // does not catch is an uncaught error of the zone that tapped it. In the
+        // app that is the root zone, whose handler shows the failure.
+        final escaped = <Object>[];
+        await runZonedGuarded(() async {
+          await tester.tap(find.byIcon(Symbols.favorite));
+          await tester.pumpAndSettle();
+        }, (error, _) => escaped.add(error));
+        expect(escaped, [same(failure)]);
+        if (!recoveryFails) {
+          expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
+        }
+      },
+    );
   }
 }
 
