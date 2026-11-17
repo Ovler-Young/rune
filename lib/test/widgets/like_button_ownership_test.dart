@@ -34,9 +34,9 @@ void main() {
             if (holdToggle) {
               holdToggle = false;
               await pending.future;
-              // Another writer has already changed the persisted value.
-              persisted[item] = false;
-              return liked;
+              persisted[item] = liked;
+              // The delayed reply predates the current persisted value.
+              return !liked;
             }
             persisted[item] = liked;
             return liked;
@@ -77,11 +77,18 @@ void main() {
           }
           pending.complete(true);
           await tester.pump();
-          expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 0);
+          final currentLiked = returnToA && pendingToggle;
+          expect(
+            tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill,
+            currentLiked ? 1 : 0,
+          );
           await tester.tap(find.byIcon(Symbols.favorite));
           await tester.pump();
-          expect(writes.last, (returnToA ? a : b, true));
-          expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
+          expect(writes.last, (returnToA ? a : b, !currentLiked));
+          expect(
+            tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill,
+            currentLiked ? 0 : 1,
+          );
         },
       );
     }
