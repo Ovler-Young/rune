@@ -32,12 +32,14 @@ void main() {
                 libraryId: 'library-uuid',
                 fileUuid: 'file-uuid',
               ),
-              fetchLikedStatus: (_) async => false,
+              fetchLikedStatus: (_) async => true,
               setLikedStatus: (_, _) async => throw failure,
             ),
           ),
         ),
       );
+
+      await tester.pumpAndSettle();
 
       // The button starts the request without awaiting it, so a failure it
       // does not catch is an uncaught error of the zone that tapped it. In the
@@ -45,9 +47,10 @@ void main() {
       final escaped = <Object>[];
       await runZonedGuarded(() async {
         await tester.tap(find.byIcon(Symbols.favorite));
-        await tester.pump();
+        await tester.pumpAndSettle();
       }, (error, _) => escaped.add(error));
       expect(escaped, [same(failure)]);
+      expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
     });
   }
 }

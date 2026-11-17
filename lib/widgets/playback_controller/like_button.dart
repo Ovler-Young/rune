@@ -31,9 +31,10 @@ class LikeButton extends StatefulWidget {
 
 class _LikeButtonState extends State<LikeButton> {
   bool liked = false;
+  bool _statusReady = false;
   late PlayingItem? item;
   int _requestGeneration = 0;
-  final Map<PlayingItem, int> _pendingWrites = {};
+  final Map<PlayingItem, Future<bool>> _pendingWrites = {};
 
   @override
   void initState() {
@@ -55,6 +56,7 @@ class _LikeButtonState extends State<LikeButton> {
   Future<void> _fetchLikedStatus() async {
     final generation = ++_requestGeneration;
     final requestItem = item;
+    _statusReady = false;
     if (requestItem == null) return;
 
     try {
@@ -64,6 +66,7 @@ class _LikeButtonState extends State<LikeButton> {
       if (mounted && generation == _requestGeneration) {
         setState(() {
           liked = isLiked;
+          _statusReady = !_pendingWrites.containsKey(requestItem);
         });
       }
     } on RequestFailure catch (error) {
@@ -75,34 +78,43 @@ class _LikeButtonState extends State<LikeButton> {
   }
 
   Future<void> _toggleLikedStatus() async {
-    final generation = ++_requestGeneration;
     final requestItem = item;
-    if (requestItem == null) return;
+    if (requestItem == null || !_statusReady) return;
+    final generation = ++_requestGeneration;
+    final desired = !liked;
+    setState(() => liked = desired);
 
-    _pendingWrites[requestItem] = (_pendingWrites[requestItem] ?? 0) + 1;
-    late bool newLikedStatus;
+    // Keep rapid taps in order even when native requests finish at different times.
+    final previous = _pendingWrites[requestItem];
+    final write = previous == null
+        ? Future<bool>.sync(
+            () => (widget.setLikedStatus ?? setLiked)(requestItem, desired),
+          )
+        : previous.then(
+            (_) => (widget.setLikedStatus ?? setLiked)(requestItem, desired),
+            onError: (Object _, StackTrace _) =>
+                (widget.setLikedStatus ?? setLiked)(requestItem, desired),
+          );
+    _pendingWrites[requestItem] = write;
+    var failed = false;
     try {
-      newLikedStatus = await (widget.setLikedStatus ?? setLiked)(
-        requestItem,
-        !liked,
-      );
-    } finally {
-      final remaining = _pendingWrites[requestItem]! - 1;
-      if (remaining == 0) {
-        _pendingWrites.remove(requestItem);
-      } else {
-        _pendingWrites[requestItem] = remaining;
+      final committed = await write;
+      if (mounted && generation == _requestGeneration) {
+        setState(() => liked = committed);
       }
-    }
-    if (!mounted) return;
-    if (generation == _requestGeneration) {
-      setState(() {
-        liked = newLikedStatus;
-      });
-    } else if (item == requestItem &&
-        !_pendingWrites.containsKey(requestItem)) {
-      // A write may have committed after the read made on returning to this item.
-      _fetchLikedStatus();
+    } catch (_) {
+      failed = true;
+      rethrow;
+    } finally {
+      if (identical(_pendingWrites[requestItem], write)) {
+        _pendingWrites.remove(requestItem);
+        if (mounted &&
+            item == requestItem &&
+            (failed || generation != _requestGeneration)) {
+          // Returning to an item may have read it before this write committed.
+          await _fetchLikedStatus();
+        }
+      }
     }
   }
 
@@ -118,7 +130,7 @@ class _LikeButtonState extends State<LikeButton> {
         (capabilities) => capabilities.setLikedRequest,
       ),
       child: RuneClickable(
-        onPressed: item == null
+        onPressed: !_statusReady
             ? null
             : () {
                 _toggleLikedStatus();

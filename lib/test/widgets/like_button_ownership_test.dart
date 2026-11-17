@@ -34,6 +34,9 @@ void main() {
             if (holdToggle) {
               holdToggle = false;
               await pending.future;
+              // Another writer has already changed the persisted value.
+              persisted[item] = false;
+              return liked;
             }
             persisted[item] = liked;
             return liked;
@@ -67,30 +70,30 @@ void main() {
           expect(tester.state(find.byType(LikeButton)), same(originalState));
           expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 0);
 
+          if (returnToA && pendingToggle) {
+            final before = writes.length;
+            await tester.tap(find.byIcon(Symbols.favorite));
+            expect(writes.length, before);
+          }
           pending.complete(true);
           await tester.pump();
-          final currentLiked = returnToA && pendingToggle;
-          expect(
-            tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill,
-            currentLiked ? 1 : 0,
-          );
+          expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 0);
           await tester.tap(find.byIcon(Symbols.favorite));
           await tester.pump();
-          expect(writes.last, (returnToA ? a : b, !currentLiked));
-          expect(
-            tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill,
-            currentLiked ? 0 : 1,
-          );
+          expect(writes.last, (returnToA ? a : b, true));
+          expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
         },
       );
     }
   }
 
-  testWidgets('a toggle supersedes a pending read and serial toggles work', (
+  testWidgets('waits for initial state and serializes rapid tap intent', (
     tester,
   ) async {
     final read = Completer<bool>();
+    final firstWrite = Completer<bool>();
     final writes = <bool>[];
+    var persisted = true;
     await tester.pumpWidget(
       ChangeNotifierProvider<LibraryOpenStateProvider>(
         create: (_) => _LibraryOpenStateProvider(),
@@ -100,6 +103,8 @@ void main() {
             fetchLikedStatus: (_) => read.future,
             setLikedStatus: (_, liked) async {
               writes.add(liked);
+              if (writes.length == 1) await firstWrite.future;
+              persisted = liked;
               return liked;
             },
           ),
@@ -108,15 +113,69 @@ void main() {
     );
     await tester.tap(find.byIcon(Symbols.favorite));
     await tester.pump();
-    expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
-    read.complete(false);
-    await tester.pump();
-    expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
+    expect(writes, isEmpty);
+    read.complete(true);
+    await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Symbols.favorite));
     await tester.pump();
-    expect(writes, [true, false]);
+    expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 0);
+    await tester.tap(find.byIcon(Symbols.favorite));
+    await tester.pump();
+    expect(writes, [false]);
+    expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
+    firstWrite.complete(false);
+    await tester.pump();
+    expect(writes, [false, true]);
+    expect(persisted, isTrue);
+    await tester.tap(find.byIcon(Symbols.favorite));
+    await tester.pump();
+    expect(writes, [false, true, false]);
+    expect(persisted, isFalse);
     expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 0);
   });
+
+  testWidgets(
+    'failed latest write restores persisted state after queued taps',
+    (tester) async {
+      final firstWrite = Completer<bool>();
+      final failure = StateError('write failed');
+      final writes = <bool>[];
+      var persisted = false;
+      await tester.pumpWidget(
+        ChangeNotifierProvider<LibraryOpenStateProvider>(
+          create: (_) => _LibraryOpenStateProvider(),
+          child: FluentApp(
+            home: LikeButton(
+              item: a,
+              fetchLikedStatus: (_) async => persisted,
+              setLikedStatus: (_, liked) async {
+                writes.add(liked);
+                if (writes.length == 1) {
+                  await firstWrite.future;
+                  return persisted = liked;
+                }
+                throw failure;
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      final escaped = <Object>[];
+      await runZonedGuarded(() async {
+        await tester.tap(find.byIcon(Symbols.favorite));
+        await tester.pump();
+        await tester.tap(find.byIcon(Symbols.favorite));
+        await tester.pump();
+        firstWrite.complete(true);
+        await tester.pumpAndSettle();
+      }, (error, _) => escaped.add(error));
+      expect(escaped, [same(failure)]);
+      expect(writes, [true, false]);
+      expect(persisted, isTrue);
+      expect(tester.widget<Icon>(find.byIcon(Symbols.favorite)).fill, 1);
+    },
+  );
 }
 
 class _LibraryOpenStateProvider extends ChangeNotifier
